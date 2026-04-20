@@ -3,6 +3,7 @@ import { oakCors } from "https://deno.land/x/cors@v1.2.2/mod.ts";
 import * as jwt from "https://deno.land/x/djwt@v2.8/mod.ts";
 import { Client } from "https://deno.land/x/mysql@v2.12.1/mod.ts";
 import { createDecipheriv } from "node:crypto";
+import { createDecipheriv, createCipheriv } from "node:crypto";
 
 // 环境变量
 const env = Deno.env.toObject();
