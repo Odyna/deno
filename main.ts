@@ -1,6 +1,7 @@
 import { Application, Router } from "https://deno.land/x/oak@14.2.0/mod.ts";
 import { oakCors } from "https://deno.land/x/cors@v1.2.2/mod.ts";
 import * as jwt from "https://deno.land/x/djwt@v2.8/mod.ts";
+import { getNumericDate } from "https://deno.land/x/djwt@v2.8/mod.ts"; // 【新增】
 import { Client } from "https://deno.land/x/mysql@v2.12.1/mod.ts";
 import { createDecipheriv, createCipheriv } from "node:crypto";
 
@@ -11,6 +12,29 @@ const JWT_EXPIRES_IN = Number(env.JWT_EXPIRES_IN);
 const ADMIN_PASSWORD = env.ADMIN_PASSWORD;
 const AES_KEY = env.AES_KEY;
 const CODE_EXPIRE_DAYS = 30;
+
+// 【新增】将字符串密钥转换为 CryptoKey
+async function getJwtKey(secret: string): Promise<CryptoKey> {
+  const encoder = new TextEncoder();
+  const keyData = encoder.encode(secret);
+  return await crypto.subtle.importKey(
+    "raw",
+    keyData,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"]
+  );
+}
+
+// 【新增】初始化 JWT 密钥
+let jwtKey: CryptoKey;
+try {
+  jwtKey = await getJwtKey(JWT_SECRET);
+  console.log("✅ JWT密钥初始化成功");
+} catch (e) {
+  console.error("❌ JWT密钥初始化失败:", e);
+  Deno.exit(1);
+}
 
 // 数据库连接
 const client = await new Client().connect({
@@ -168,10 +192,12 @@ async function authenticateToken(ctx: any, next: () => Promise<void>) {
     return;
   }
   try {
-    const payload = await jwt.verify(token, JWT_SECRET);
+    // 【修复】使用 jwtKey 验证
+    const payload = await jwt.verify(token, jwtKey);
     ctx.state.user = payload;
     await next();
   } catch (err) {
+    console.error("❌ Token验证失败:", err); // 【新增】方便调试
     ctx.response.status = 403;
     ctx.response.body = { success: false, message: '登录已过期' };
   }
@@ -215,13 +241,22 @@ router.post('/api/login', async (ctx) => {
     }
     let isPremium = user.is_premium;
     if (user.premium_expiry && new Date() > new Date(user.premium_expiry)) isPremium = false;
-    const token = await jwt.create({ alg: 'HS256', exp: Date.now() / 1000 + JWT_EXPIRES_IN }, { userId: user.id, username: user.username }, JWT_SECRET);
+    const token = await jwt.create(
+  { alg: "HS256" }, // Header 只留算法
+  {
+    userId: user.id,
+    username: user.username,
+    exp: getNumericDate(JWT_EXPIRES_IN), // 【修复】exp 放在这里
+  },
+  jwtKey // 【修复】使用转换后的 CryptoKey
+);
     ctx.response.body = {
       success: true, token, userId: user.id, username: user.username,
       isPremium: !!isPremium, expiryDate: user.premium_expiry ? new Date(user.premium_expiry).toISOString() : null,
       securityQuestion: user.security_question
     };
-  } catch (err) {
+    } catch (err) {
+    console.error("❌ 登录接口错误:", err); // 【新增】这行很重要
     ctx.response.body = { success: false, message: '登录失败' };
   }
 });
