@@ -12,6 +12,14 @@ const requiredEnv = [
   "LATEST_VERSION", "FORCE_UPDATE", "DOWNLOAD_URL", "UPDATE_DESC"
 ];
 
+// 【新增】打印数据库配置（脱敏，方便排查）
+console.log("📊 数据库配置：");
+console.log("- 地址:", env.DB_HOST);
+console.log("- 端口:", env.DB_PORT);
+console.log("- 用户名:", env.DB_USER);
+console.log("- 数据库名:", env.DB_DATABASE);
+
+
 for (const key of requiredEnv) {
   if (!env[key]) {
     console.error(`❌ 缺失环境变量: ${key}`);
