@@ -16,7 +16,7 @@ const CODE_EXPIRE_DAYS = 30;
 // 数据库连接
 const client = await new Client().connect({
   hostname: env.DB_HOST,
-  port: Number(env.DB_PORT,
+  port: Number(env.DB_PORT),
   username: env.DB_USER,
   password: env.DB_PASSWORD,
   db: env.DB_DATABASE,
