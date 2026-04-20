@@ -646,10 +646,20 @@ router.post('/api/user/checkin', authenticateToken, async (ctx) => {
   }
 });
 
-// 初始化中间件（核心：第一次请求才初始化，不阻塞部署）
+// 全局初始化中间件（带超时保护，修复前端TimeoutException）
 async function globalInit(ctx: any, next: () => Promise<void>) {
-  await initAll();
-  await next();
+  try {
+    // 8秒超时，防止初始化卡住导致前端请求超时
+    await Promise.race([
+      initAll(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("初始化超时")), 8000))
+    ]);
+    await next();
+  } catch (err) {
+    console.error("❌ 服务异常:", err);
+    ctx.response.status = 503;
+    ctx.response.body = { success: false, message: "服务繁忙，请稍后重试" };
+  }
 }
 
 // 启动服务
