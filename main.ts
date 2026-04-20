@@ -6,16 +6,16 @@ import { createDecipheriv } from "node:crypto";
 
 // 环境变量
 const env = Deno.env.toObject();
-const JWT_SECRET = env.JWT_SECRET || "your-secret-key";
-const JWT_EXPIRES_IN = Number(env.JWT_EXPIRES_IN) || 86400;
-const ADMIN_PASSWORD = env.ADMIN_PASSWORD || "admin123";
-const AES_KEY = env.AES_KEY || "1234567890123456";
+const JWT_SECRET = env.JWT_SECRET;
+const JWT_EXPIRES_IN = Number(env.JWT_EXPIRES_IN);
+const ADMIN_PASSWORD = env.ADMIN_PASSWORD;
+const AES_KEY = env.AES_KEY;
 const CODE_EXPIRE_DAYS = 30;
 
 // 数据库连接
 const client = await new Client().connect({
   hostname: env.DB_HOST,
-  port: Number(env.DB_PORT || 3306),
+  port: Number(env.DB_PORT,
   username: env.DB_USER,
   password: env.DB_PASSWORD,
   db: env.DB_DATABASE,
@@ -502,10 +502,10 @@ router.post('/api/user/reset-password', async (ctx) => {
 router.get('/api/version/check', (ctx) => {
   ctx.response.body = {
     success: true,
-    latestVersion: env.LATEST_VERSION || "1.0.2",
-    forceUpdate: env.FORCE_UPDATE === 'true',
-    downloadUrl: env.DOWNLOAD_URL || "https://www.lanzouy.com/xxxxxxx",
-    updateDesc: env.UPDATE_DESC || "1. 新增账号安全中心\n2. 新增隐私模式\n3. 修复已知问题",
+    latestVersion: env.LATEST_VERSION,
+    forceUpdate: env.FORCE_UPDATE,
+    downloadUrl: env.DOWNLOAD_URL,
+    updateDesc: env.UPDATE_DESC,
   };
 });
 
