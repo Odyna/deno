@@ -1,10 +1,10 @@
-import { Application, Router } from "https://deno.land/x/oak@14.2.0/mod.ts";
-import { oakCors } from "https://deno.land/x/cors@v1.2.2/mod.ts";
-import * as jwt from "https://deno.land/x/djwt@v2.8/mod.ts";
-import { getNumericDate } from "https://deno.land/x/djwt@v2.8/mod.ts";
-import { Client } from "https://deno.land/x/mysql@v2.12.1/mod.ts";
+import { Application, Router } from "oak";
+import { oakCors } from "cors";
+import * as jwt from "djwt";
+import { getNumericDate } from "djwt";
+import { Client } from "mysql";
 
-// ===================== 修复1：环境变量校验 =====================
+// ===================== 环境变量校验 =====================
 const env = Deno.env.toObject();
 const requiredEnv = [
   "JWT_SECRET", "ADMIN_PASSWORD", "AES_KEY",
@@ -31,7 +31,7 @@ let jwtKey: CryptoKey | null = null;
 let isInitialized = false;
 let initPromise: Promise<void> | null = null;
 
-// ===================== 修复2：JWT密钥初始化 =====================
+// ===================== JWT密钥初始化 =====================
 async function getJwtKey(secret: string): Promise<CryptoKey> {
   const encoder = new TextEncoder();
   const keyData = encoder.encode(secret);
@@ -42,8 +42,7 @@ async function getJwtKey(secret: string): Promise<CryptoKey> {
   );
 }
 
-// ===================== 修复3：Deno原生AES解密（替换node:crypto） =====================
-// 解密映射
+// ===================== Deno原生AES解密 =====================
 const DECODE_MAP = {
   'KA': 'a', 'KB': 'b', 'KC': 'c', 'KD': 'd', 'KE': 'e',
   'KF': 'f', 'KG': 'g', 'KH': 'h', 'KI': 'i', 'KJ': 'j',
@@ -53,35 +52,29 @@ const DECODE_MAP = {
   'KZ': 'z', 'LA': '+', 'LB': '/', 'LC': '='
 };
 
-// AES-128-ECB 解密（Deno原生Web Crypto实现，兼容Deno Deploy）
 async function aesDecrypt(encryptedText: string) {
   try {
     let processedText = encryptedText.replace(/-/g, '');
-    // 替换映射字符
     const entries = Object.entries(DECODE_MAP).sort((a, b) => b[0].length - a[0].length);
     for (const [key, value] of entries) {
       processedText = processedText.split(key).join(value);
     }
 
-    // base64转字节
     const encryptedData = Uint8Array.from(atob(processedText), c => c.charCodeAt(0));
     const keyBytes = new TextEncoder().encode(AES_KEY.padEnd(16, '\0').slice(0, 16));
 
-    // 导入AES密钥
     const key = await crypto.subtle.importKey(
       "raw", keyBytes,
       { name: "AES-ECB" },
       false, ["decrypt"]
     );
 
-    // 解密
     const decryptedData = await crypto.subtle.decrypt(
       { name: "AES-ECB" },
       key,
       encryptedData
     );
 
-    // 转字符串并去除PKCS7填充
     const decoder = new TextDecoder();
     let decrypted = decoder.decode(decryptedData);
     const pad = decrypted.charCodeAt(decrypted.length - 1);
@@ -93,9 +86,8 @@ async function aesDecrypt(encryptedText: string) {
   }
 }
 
-// 激活码解析
 async function parseActivateCode(code: string) {
-  const plainText = await aesDecrypt(code); // 改为异步
+  const plainText = await aesDecrypt(code);
   if (!plainText) return { success: false, error: '激活码格式错误' };
   const parts = plainText.split('|');
   if (parts.length !== 5) return { success: false, error: '激活码格式无效' };
@@ -112,7 +104,7 @@ async function parseActivateCode(code: string) {
   };
 }
 
-// ===================== 修复4：数据库初始化（带重试，无超时） =====================
+// ===================== 数据库初始化 =====================
 async function initDB() {
   if (!client) return;
   try {
@@ -135,7 +127,7 @@ async function initDB() {
   }
 }
 
-// 全局初始化（带重试，无超时限制）
+// 全局初始化（重试机制）
 async function initAll() {
   if (isInitialized) return;
   if (initPromise) return initPromise;
@@ -144,24 +136,20 @@ async function initAll() {
     let retries = 5;
     while (retries > 0) {
       try {
-        // 1. 初始化JWT
         jwtKey = await getJwtKey(JWT_SECRET);
         console.log("✅ JWT密钥初始化成功");
 
-        // 2. 连接MySQL
         client = await new Client().connect({
           hostname: env.DB_HOST,
           port: Number(env.DB_PORT),
           username: env.DB_USER,
           password: env.DB_PASSWORD,
           db: env.DB_DATABASE,
-          timeout: 30000 // 延长数据库超时
+          timeout: 30000
         });
         console.log("✅ MySQL连接成功");
 
-        // 3. 初始化数据库表
         await initDB();
-
         isInitialized = true;
         console.log("✅ 全局初始化完成！服务正常运行");
         return;
@@ -198,7 +186,7 @@ async function authenticateToken(ctx: any, next: () => Promise<void>) {
   }
 }
 
-// ===================== 路由（全部保持不变） =====================
+// ===================== 路由 =====================
 const router = new Router();
 
 // 注册
@@ -326,7 +314,7 @@ router.post('/api/pay/activate', authenticateToken, async (ctx) => {
   if (!client) return ctx.response.body = { success: false, message: '数据库未连接' };
   const conn = await client.getConnection();
   try {
-    const codeInfo = await parseActivateCode(activateCode); // 异步解密
+    const codeInfo = await parseActivateCode(activateCode);
     if (!codeInfo.success) {
       ctx.response.body = { success: false, message: codeInfo.error };
       return;
@@ -631,14 +619,12 @@ router.post('/api/user/checkin', authenticateToken, async (ctx) => {
   }
 });
 
-// ===================== 修复5：服务启动初始化（无超时中间件） =====================
-// 服务启动时直接初始化
+// ===================== 服务启动 =====================
 await initAll().catch(err => {
   console.error("❌ 服务启动初始化失败:", err);
   Deno.exit(1);
 });
 
-// 服务配置
 const app = new Application();
 app.use(oakCors({ origin: '*' }));
 app.use(router.routes());
@@ -650,7 +636,6 @@ app.use((ctx) => {
   ctx.response.body = { success: false, message: '接口不存在' };
 });
 
-// Deno Deploy 导出
 export default {
   fetch: app.fetch,
 };
