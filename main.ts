@@ -8,12 +8,12 @@ import { createDecipheriv } from "node:crypto";
 // 环境变量
 const env = Deno.env.toObject();
 const JWT_SECRET = env.JWT_SECRET;
-const JWT_EXPIRES_IN = 604800; // 固定7天，避免环境变量解析错误
+const JWT_EXPIRES_IN = 604800;
 const ADMIN_PASSWORD = env.ADMIN_PASSWORD;
 const AES_KEY = env.AES_KEY;
 const CODE_EXPIRE_DAYS = 30;
 
-// 全局变量（无顶层await）
+// 全局变量
 let client: Client | null = null;
 let jwtKey: CryptoKey | null = null;
 let isInitialized = false;
@@ -25,16 +25,14 @@ async function getJwtKey(secret: string): Promise<CryptoKey> {
   return await crypto.subtle.importKey("raw", keyData, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
 }
 
-// 全局统一初始化（仅第一次请求执行）
+// 全局统一初始化
 async function initAll() {
   if (isInitialized) return;
   
   try {
-    // 1. 初始化 JWT
     jwtKey = await getJwtKey(JWT_SECRET);
     console.log("✅ JWT密钥初始化成功");
 
-    // 2. 连接数据库
     client = await new Client().connect({
       hostname: env.DB_HOST,
       port: Number(env.DB_PORT),
@@ -43,7 +41,6 @@ async function initAll() {
       db: env.DB_DATABASE,
     });
 
-    // 3. 初始化数据表
     await initDB();
     console.log("✅ 全局初始化完成");
     isInitialized = true;
@@ -104,85 +101,13 @@ async function initDB() {
   if (!client) return;
   try {
     console.log('🔧 正在检查数据库...');
-    await client.execute(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(50) NOT NULL UNIQUE,
-        password VARCHAR(255) NOT NULL,
-        is_premium BOOLEAN DEFAULT FALSE,
-        premium_expiry DATETIME NULL,
-        security_question VARCHAR(255) NULL,
-        security_answer VARCHAR(255) NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-    await client.execute(`
-      CREATE TABLE IF NOT EXISTS items (
-        id VARCHAR(100) PRIMARY KEY,
-        user_id INT NOT NULL,
-        name VARCHAR(255) NOT NULL,
-        price DECIMAL(20,2) NOT NULL,
-        purchase_date BIGINT NOT NULL,
-        category_name VARCHAR(100),
-        icon_code INT,
-        expect_use_years INT NULL,
-        residual_rate DECIMAL(5,4) NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
-    await client.execute(`
-      CREATE TABLE IF NOT EXISTS category_mappings (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id INT NOT NULL,
-        keyword VARCHAR(100) NOT NULL,
-        category_name VARCHAR(100) NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-        UNIQUE KEY unique_keyword_per_user (user_id, keyword)
-      )
-    `);
-    await client.execute(`
-      CREATE TABLE IF NOT EXISTS used_codes (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        activate_code VARCHAR(500) NOT NULL UNIQUE,
-        user_id INT NOT NULL,
-        device_fingerprint VARCHAR(200) NOT NULL,
-        days INT NOT NULL,
-        used_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
-    await client.execute(`
-      CREATE TABLE IF NOT EXISTS unbind_applications (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id INT NOT NULL,
-        username VARCHAR(50) NOT NULL,
-        old_device_fingerprint VARCHAR(200) NOT NULL,
-        new_device_fingerprint VARCHAR(200) NOT NULL,
-        status TINYINT DEFAULT 0,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        handle_at DATETIME NULL,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
-    try {
-      await client.execute('SELECT * FROM user_checkin LIMIT 1');
-    } catch (e) {
-      await client.execute(`
-        CREATE TABLE user_checkin (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          user_id INT NOT NULL UNIQUE,
-          consecutive_check_in_days INT DEFAULT 0,
-          total_check_in_days INT DEFAULT 0,
-          longest_streak INT DEFAULT 0,
-          re_sign_cards INT DEFAULT 0,
-          last_check_in_date DATETIME NULL,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        )
-      `);
+    await client.execute(`CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY,username VARCHAR(50) NOT NULL UNIQUE,password VARCHAR(255) NOT NULL,is_premium BOOLEAN DEFAULT FALSE,premium_expiry DATETIME NULL,security_question VARCHAR(255) NULL,security_answer VARCHAR(255) NULL,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+    await client.execute(`CREATE TABLE IF NOT EXISTS items (id VARCHAR(100) PRIMARY KEY,user_id INT NOT NULL,name VARCHAR(255) NOT NULL,price DECIMAL(20,2) NOT NULL,purchase_date BIGINT NOT NULL,category_name VARCHAR(100),icon_code INT,expect_use_years INT NULL,residual_rate DECIMAL(5,4) NULL,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)`);
+    await client.execute(`CREATE TABLE IF NOT EXISTS category_mappings (id INT AUTO_INCREMENT PRIMARY KEY,user_id INT NOT NULL,keyword VARCHAR(100) NOT NULL,category_name VARCHAR(100) NOT NULL,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,UNIQUE KEY unique_keyword_per_user (user_id, keyword))`);
+    await client.execute(`CREATE TABLE IF NOT EXISTS used_codes (id INT AUTO_INCREMENT PRIMARY KEY,activate_code VARCHAR(500) NOT NULL UNIQUE,user_id INT NOT NULL,device_fingerprint VARCHAR(200) NOT NULL,days INT NOT NULL,used_at DATETIME DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)`);
+    await client.execute(`CREATE TABLE IF NOT EXISTS unbind_applications (id INT AUTO_INCREMENT PRIMARY KEY,user_id INT NOT NULL,username VARCHAR(50) NOT NULL,old_device_fingerprint VARCHAR(200) NOT NULL,new_device_fingerprint VARCHAR(200) NOT NULL,status TINYINT DEFAULT 0,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,handle_at DATETIME NULL,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)`);
+    try { await client.execute('SELECT * FROM user_checkin LIMIT 1'); } catch (e) {
+      await client.execute(`CREATE TABLE user_checkin (id INT AUTO_INCREMENT PRIMARY KEY,user_id INT NOT NULL UNIQUE,consecutive_check_in_days INT DEFAULT 0,total_check_in_days INT DEFAULT 0,longest_streak INT DEFAULT 0,re_sign_cards INT DEFAULT 0,last_check_in_date DATETIME NULL,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)`);
     }
     console.log('✅ 数据库初始化完成');
   } catch (err) {
@@ -214,9 +139,9 @@ async function authenticateToken(ctx: any, next: () => Promise<void>) {
 // 路由
 const router = new Router();
 
-// 注册
+// 注册 ✅ 修复 Oak body 解析
 router.post('/api/register', async (ctx) => {
-  const { username, password } = await ctx.request.body().value;
+  const { username, password } = await ctx.request.json();
   if (!username || !password || username.length < 4 || username.length > 16 || password.length < 8) {
     ctx.response.body = { success: false, message: '参数错误' };
     return;
@@ -230,9 +155,9 @@ router.post('/api/register', async (ctx) => {
   }
 });
 
-// 登录
+// 登录 ✅ 修复 Oak body 解析
 router.post('/api/login', async (ctx) => {
-  const { username, password } = await ctx.request.body().value;
+  const { username, password } = await ctx.request.json();
   if (!username || !password) {
     ctx.response.body = { success: false, message: '参数错误' };
     return;
@@ -269,9 +194,9 @@ router.post('/api/login', async (ctx) => {
   }
 });
 
-// 同步数据
+// 同步数据 ✅ 修复 Oak body 解析
 router.post('/api/sync', authenticateToken, async (ctx) => {
-  const { items, mappings } = await ctx.request.body().value;
+  const { items, mappings } = await ctx.request.json();
   const userId = ctx.state.user.userId;
   if (!client) return ctx.response.body = { success: false, message: '数据库未连接' };
   const conn = await client.getConnection();
@@ -331,9 +256,9 @@ router.get('/api/sync', authenticateToken, async (ctx) => {
   }
 });
 
-// 激活会员
+// 激活会员 ✅ 修复 Oak body 解析
 router.post('/api/pay/activate', authenticateToken, async (ctx) => {
-  const { activateCode, deviceFingerprint } = await ctx.request.body().value;
+  const { activateCode, deviceFingerprint } = await ctx.request.json();
   const userId = ctx.state.user.userId;
   if (!client) return ctx.response.body = { success: false, message: '数据库未连接' };
   const conn = await client.getConnection();
@@ -374,9 +299,9 @@ router.post('/api/pay/activate', authenticateToken, async (ctx) => {
   }
 });
 
-// 设备解绑
+// 设备解绑 ✅ 修复 Oak body 解析
 router.post('/api/device/unbind', authenticateToken, async (ctx) => {
-  const { newDeviceFingerprint } = await ctx.request.body().value;
+  const { newDeviceFingerprint } = await ctx.request.json();
   const userId = ctx.state.user.userId;
   const username = ctx.state.user.username;
   try {
@@ -411,6 +336,7 @@ router.get('/api/admin/unbind/list', async (ctx) => {
   }
 });
 
+// 管理员处理 ✅ 修复 Oak body 解析
 router.post('/api/admin/unbind/handle', async (ctx) => {
   const adminPwd = ctx.request.headers.get('admin-password');
   if (!adminPwd || adminPwd !== ADMIN_PASSWORD) {
@@ -418,7 +344,7 @@ router.post('/api/admin/unbind/handle', async (ctx) => {
     ctx.response.body = { success: false, message: '无权访问' };
     return;
   }
-  const { id, status } = await ctx.request.body().value;
+  const { id, status } = await ctx.request.json();
   try {
     if (!client) throw new Error("数据库未连接");
     await client.execute('UPDATE unbind_applications SET status = ?, handle_at = NOW() WHERE id = ?', [status, id]);
@@ -456,9 +382,9 @@ router.get('/api/user/status', authenticateToken, async (ctx) => {
   }
 });
 
-// 修改用户名
+// 修改用户名 ✅ 修复 Oak body 解析
 router.post('/api/user/change-username', authenticateToken, async (ctx) => {
-  const { newUsername } = await ctx.request.body().value;
+  const { newUsername } = await ctx.request.json();
   const userId = ctx.state.user.userId;
   if (!newUsername || newUsername.length < 4 || newUsername.length > 16) {
     ctx.response.body = { success: false, message: '用户名长度错误' };
@@ -478,9 +404,9 @@ router.post('/api/user/change-username', authenticateToken, async (ctx) => {
   }
 });
 
-// 修改密码
+// 修改密码 ✅ 修复 Oak body 解析
 router.post('/api/user/change-password', authenticateToken, async (ctx) => {
-  const { oldPassword, newPassword } = await ctx.request.body().value;
+  const { oldPassword, newPassword } = await ctx.request.json();
   const userId = ctx.state.user.userId;
   if (!oldPassword || !newPassword || newPassword.length < 8) {
     ctx.response.body = { success: false, message: '参数错误' };
@@ -505,9 +431,9 @@ router.post('/api/user/change-password', authenticateToken, async (ctx) => {
   }
 });
 
-// 设置密保
+// 设置密保 ✅ 修复 Oak body 解析
 router.post('/api/user/security-question', authenticateToken, async (ctx) => {
-  const { question, answer } = await ctx.request.body().value;
+  const { question, answer } = await ctx.request.json();
   const userId = ctx.state.user.userId;
   if (!question || !answer) {
     ctx.response.body = { success: false, message: '参数错误' };
@@ -522,9 +448,9 @@ router.post('/api/user/security-question', authenticateToken, async (ctx) => {
   }
 });
 
-// 重置密码
+// 重置密码 ✅ 修复 Oak body 解析
 router.post('/api/user/reset-password', async (ctx) => {
-  const { username, answer, newPassword } = await ctx.request.body().value;
+  const { username, answer, newPassword } = await ctx.request.json();
   if (!username || !answer || !newPassword || newPassword.length < 8) {
     ctx.response.body = { success: false, message: '参数错误' };
     return;
@@ -616,9 +542,10 @@ router.get('/api/user/checkin', authenticateToken, async (ctx) => {
   }
 });
 
+// 上传打卡 ✅ 修复 Oak body 解析
 router.post('/api/user/checkin', authenticateToken, async (ctx) => {
+  const data = await ctx.request.json();
   const userId = ctx.state.user.userId;
-  const { consecutiveCheckInDays, totalCheckInDays, longestStreak, reSignCards, lastCheckInDate } = await ctx.request.body().value;
   try {
     if (!client) throw new Error("数据库未连接");
     const [userRows] = await client.execute('SELECT is_premium FROM users WHERE id = ?', [userId]);
@@ -629,16 +556,11 @@ router.post('/api/user/checkin', authenticateToken, async (ctx) => {
     }
     const [existing] = await client.execute('SELECT id FROM user_checkin WHERE user_id = ?', [userId]);
     if (existing.length) {
-      await client.execute(`
-        UPDATE user_checkin 
-        SET consecutive_check_in_days = ?, total_check_in_days = ?, longest_streak = ?, re_sign_cards = ?, last_check_in_date = ?
-        WHERE user_id = ?
-      `, [consecutiveCheckInDays || 0, totalCheckInDays || 0, longestStreak || 0, reSignCards || 0, lastCheckInDate ? new Date(lastCheckInDate) : null, userId]);
+      await client.execute(`UPDATE user_checkin SET consecutive_check_in_days = ?, total_check_in_days = ?, longest_streak = ?, re_sign_cards = ?, last_check_in_date = ? WHERE user_id = ?`,
+        [data.consecutiveCheckInDays || 0, data.totalCheckInDays || 0, data.longestStreak || 0, data.reSignCards || 0, data.lastCheckInDate ? new Date(data.lastCheckInDate) : null, userId]);
     } else {
-      await client.execute(`
-        INSERT INTO user_checkin (user_id, consecutive_check_in_days, total_check_in_days, longest_streak, re_sign_cards, last_check_in_date)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `, [userId, consecutiveCheckInDays || 0, totalCheckInDays || 0, longestStreak || 0, reSignCards || 0, lastCheckInDate ? new Date(lastCheckInDate) : null]);
+      await client.execute(`INSERT INTO user_checkin (user_id, consecutive_check_in_days, total_check_in_days, longest_streak, re_sign_cards, last_check_in_date) VALUES (?, ?, ?, ?, ?, ?)`,
+        [userId, data.consecutiveCheckInDays || 0, data.totalCheckInDays || 0, data.longestStreak || 0, data.reSignCards || 0, data.lastCheckInDate ? new Date(data.lastCheckInDate) : null]);
     }
     ctx.response.body = { success: true, message: '同步成功' };
   } catch (err) {
@@ -646,10 +568,9 @@ router.post('/api/user/checkin', authenticateToken, async (ctx) => {
   }
 });
 
-// 全局初始化中间件（带超时保护，修复前端TimeoutException）
+// 全局初始化中间件（带超时保护）
 async function globalInit(ctx: any, next: () => Promise<void>) {
   try {
-    // 8秒超时，防止初始化卡住导致前端请求超时
     await Promise.race([
       initAll(),
       new Promise((_, reject) => setTimeout(() => reject(new Error("初始化超时")), 8000))
@@ -662,20 +583,20 @@ async function globalInit(ctx: any, next: () => Promise<void>) {
   }
 }
 
-// 启动服务
+// 服务配置
 const app = new Application();
 app.use(oakCors({ origin: '*' }));
-app.use(globalInit); // 全局初始化
+app.use(globalInit);
 app.use(router.routes());
 app.use(router.allowedMethods());
 
-// 404 处理
+// 404
 app.use((ctx) => {
   ctx.response.status = 404;
   ctx.response.body = { success: false, message: '接口不存在' };
 });
 
-// Deno Deploy 标准导出（删除了所有listen和顶层await）
+// Deno Deploy 导出
 export default {
   fetch: app.fetch,
 };
