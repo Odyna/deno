@@ -638,4 +638,8 @@ app.use((ctx) => {
 
 await initDB();
 console.log('🚀 Deno Deploy 服务启动成功');
-await app.listen({ port: 8000 });
+
+// 【核心修改】不要 listen，直接导出 fetch
+export default {
+  fetch: app.fetch,
+};
