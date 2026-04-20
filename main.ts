@@ -1,6 +1,6 @@
 import { Application, Router } from "https://deno.land/x/oak@14.2.0/mod.ts";
 import { oakCors } from "https://deno.land/x/cors@v1.2.2/mod.ts";
-import { rateLimiter } from "https://deno.land/x/oak_rate_limit@v0.1.1/mod.ts";
+import { RateLimiter } from "https://deno.land/x/oak_rate_limit@v0.1.1/mod.ts";
 import * as jwt from "https://deno.land/x/djwt@v2.8/mod.ts";
 import { Client } from "https://deno.land/x/mysql@v2.12.1/mod.ts";
 import { createDecipheriv } from "node:crypto";
@@ -599,7 +599,8 @@ router.all('*', (ctx) => {
 // 启动服务
 const app = new Application();
 app.use(oakCors({ origin: '*' }));
-app.use(rateLimiter({ windowMs: 60000, max: 60 }));
+const limiter = new RateLimiter({ windowMs: 60000, max: 60 });
+app.use(limiter.middleware());
 app.use(router.routes());
 app.use(router.allowedMethods());
 
