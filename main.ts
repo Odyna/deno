@@ -3,10 +3,22 @@ import { oakCors } from "https://deno.land/x/cors@v1.2.2/mod.ts";
 import * as jwt from "https://deno.land/x/djwt@v2.8/mod.ts";
 import { getNumericDate } from "https://deno.land/x/djwt@v2.8/mod.ts";
 import { Client } from "https://deno.land/x/mysql@v2.12.1/mod.ts";
-import { createDecipheriv } from "node:crypto";
 
-// 环境变量
+// ===================== 修复1：环境变量校验 =====================
 const env = Deno.env.toObject();
+const requiredEnv = [
+  "JWT_SECRET", "ADMIN_PASSWORD", "AES_KEY",
+  "DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_DATABASE",
+  "LATEST_VERSION", "FORCE_UPDATE", "DOWNLOAD_URL", "UPDATE_DESC"
+];
+
+for (const key of requiredEnv) {
+  if (!env[key]) {
+    console.error(`❌ 缺失环境变量: ${key}`);
+    Deno.exit(1);
+  }
+}
+
 const JWT_SECRET = env.JWT_SECRET;
 const JWT_EXPIRES_IN = 604800;
 const ADMIN_PASSWORD = env.ADMIN_PASSWORD;
@@ -17,38 +29,20 @@ const CODE_EXPIRE_DAYS = 30;
 let client: Client | null = null;
 let jwtKey: CryptoKey | null = null;
 let isInitialized = false;
+let initPromise: Promise<void> | null = null;
 
-// JWT 密钥初始化
+// ===================== 修复2：JWT密钥初始化 =====================
 async function getJwtKey(secret: string): Promise<CryptoKey> {
   const encoder = new TextEncoder();
   const keyData = encoder.encode(secret);
-  return await crypto.subtle.importKey("raw", keyData, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+  return await crypto.subtle.importKey(
+    "raw", keyData,
+    { name: "HMAC", hash: "SHA-256" },
+    false, ["sign", "verify"]
+  );
 }
 
-// 全局统一初始化
-async function initAll() {
-  if (isInitialized) return;
-  
-  try {
-    jwtKey = await getJwtKey(JWT_SECRET);
-    console.log("✅ JWT密钥初始化成功");
-
-    client = await new Client().connect({
-      hostname: env.DB_HOST,
-      port: Number(env.DB_PORT),
-      username: env.DB_USER,
-      password: env.DB_PASSWORD,
-      db: env.DB_DATABASE,
-    });
-
-    await initDB();
-    console.log("✅ 全局初始化完成");
-    isInitialized = true;
-  } catch (err) {
-    console.error("❌ 初始化失败:", err);
-  }
-}
-
+// ===================== 修复3：Deno原生AES解密（替换node:crypto） =====================
 // 解密映射
 const DECODE_MAP = {
   'KA': 'a', 'KB': 'b', 'KC': 'c', 'KD': 'd', 'KE': 'e',
@@ -59,17 +53,39 @@ const DECODE_MAP = {
   'KZ': 'z', 'LA': '+', 'LB': '/', 'LC': '='
 };
 
-// AES解密
-function aesDecrypt(encryptedText: string) {
+// AES-128-ECB 解密（Deno原生Web Crypto实现，兼容Deno Deploy）
+async function aesDecrypt(encryptedText: string) {
   try {
     let processedText = encryptedText.replace(/-/g, '');
-    for (const [key, value] of Object.entries(DECODE_MAP).sort((a, b) => b[0].length - a[0].length)) {
+    // 替换映射字符
+    const entries = Object.entries(DECODE_MAP).sort((a, b) => b[0].length - a[0].length);
+    for (const [key, value] of entries) {
       processedText = processedText.split(key).join(value);
     }
-    const decipher = createDecipheriv('aes-128-ecb', Buffer.from(AES_KEY, 'utf8'), null);
-    decipher.setAutoPadding(true);
-    let decrypted = decipher.update(processedText, 'base64', 'utf8');
-    decrypted += decipher.final('utf8');
+
+    // base64转字节
+    const encryptedData = Uint8Array.from(atob(processedText), c => c.charCodeAt(0));
+    const keyBytes = new TextEncoder().encode(AES_KEY.padEnd(16, '\0').slice(0, 16));
+
+    // 导入AES密钥
+    const key = await crypto.subtle.importKey(
+      "raw", keyBytes,
+      { name: "AES-ECB" },
+      false, ["decrypt"]
+    );
+
+    // 解密
+    const decryptedData = await crypto.subtle.decrypt(
+      { name: "AES-ECB" },
+      key,
+      encryptedData
+    );
+
+    // 转字符串并去除PKCS7填充
+    const decoder = new TextDecoder();
+    let decrypted = decoder.decode(decryptedData);
+    const pad = decrypted.charCodeAt(decrypted.length - 1);
+    decrypted = decrypted.slice(0, -pad);
     return decrypted;
   } catch (e) {
     console.error('❌ 解密失败：', e);
@@ -78,8 +94,8 @@ function aesDecrypt(encryptedText: string) {
 }
 
 // 激活码解析
-function parseActivateCode(code: string) {
-  const plainText = aesDecrypt(code);
+async function parseActivateCode(code: string) {
+  const plainText = await aesDecrypt(code); // 改为异步
   if (!plainText) return { success: false, error: '激活码格式错误' };
   const parts = plainText.split('|');
   if (parts.length !== 5) return { success: false, error: '激活码格式无效' };
@@ -96,26 +112,72 @@ function parseActivateCode(code: string) {
   };
 }
 
-// 初始化数据库
+// ===================== 修复4：数据库初始化（带重试，无超时） =====================
 async function initDB() {
   if (!client) return;
   try {
-    console.log('🔧 正在检查数据库...');
+    console.log('🔧 正在初始化数据库表...');
     await client.execute(`CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY,username VARCHAR(50) NOT NULL UNIQUE,password VARCHAR(255) NOT NULL,is_premium BOOLEAN DEFAULT FALSE,premium_expiry DATETIME NULL,security_question VARCHAR(255) NULL,security_answer VARCHAR(255) NULL,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
     await client.execute(`CREATE TABLE IF NOT EXISTS items (id VARCHAR(100) PRIMARY KEY,user_id INT NOT NULL,name VARCHAR(255) NOT NULL,price DECIMAL(20,2) NOT NULL,purchase_date BIGINT NOT NULL,category_name VARCHAR(100),icon_code INT,expect_use_years INT NULL,residual_rate DECIMAL(5,4) NULL,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)`);
     await client.execute(`CREATE TABLE IF NOT EXISTS category_mappings (id INT AUTO_INCREMENT PRIMARY KEY,user_id INT NOT NULL,keyword VARCHAR(100) NOT NULL,category_name VARCHAR(100) NOT NULL,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,UNIQUE KEY unique_keyword_per_user (user_id, keyword))`);
     await client.execute(`CREATE TABLE IF NOT EXISTS used_codes (id INT AUTO_INCREMENT PRIMARY KEY,activate_code VARCHAR(500) NOT NULL UNIQUE,user_id INT NOT NULL,device_fingerprint VARCHAR(200) NOT NULL,days INT NOT NULL,used_at DATETIME DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)`);
     await client.execute(`CREATE TABLE IF NOT EXISTS unbind_applications (id INT AUTO_INCREMENT PRIMARY KEY,user_id INT NOT NULL,username VARCHAR(50) NOT NULL,old_device_fingerprint VARCHAR(200) NOT NULL,new_device_fingerprint VARCHAR(200) NOT NULL,status TINYINT DEFAULT 0,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,handle_at DATETIME NULL,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)`);
-    try { await client.execute('SELECT * FROM user_checkin LIMIT 1'); } catch (e) {
+    
+    try {
+      await client.execute('SELECT 1 FROM user_checkin LIMIT 1');
+    } catch {
       await client.execute(`CREATE TABLE user_checkin (id INT AUTO_INCREMENT PRIMARY KEY,user_id INT NOT NULL UNIQUE,consecutive_check_in_days INT DEFAULT 0,total_check_in_days INT DEFAULT 0,longest_streak INT DEFAULT 0,re_sign_cards INT DEFAULT 0,last_check_in_date DATETIME NULL,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)`);
     }
-    console.log('✅ 数据库初始化完成');
+    console.log('✅ 数据库表初始化完成');
   } catch (err) {
     console.error('❌ 数据库初始化失败:', err);
+    throw err;
   }
 }
 
-// JWT中间件
+// 全局初始化（带重试，无超时限制）
+async function initAll() {
+  if (isInitialized) return;
+  if (initPromise) return initPromise;
+
+  initPromise = (async () => {
+    let retries = 5;
+    while (retries > 0) {
+      try {
+        // 1. 初始化JWT
+        jwtKey = await getJwtKey(JWT_SECRET);
+        console.log("✅ JWT密钥初始化成功");
+
+        // 2. 连接MySQL
+        client = await new Client().connect({
+          hostname: env.DB_HOST,
+          port: Number(env.DB_PORT),
+          username: env.DB_USER,
+          password: env.DB_PASSWORD,
+          db: env.DB_DATABASE,
+          timeout: 30000 // 延长数据库超时
+        });
+        console.log("✅ MySQL连接成功");
+
+        // 3. 初始化数据库表
+        await initDB();
+
+        isInitialized = true;
+        console.log("✅ 全局初始化完成！服务正常运行");
+        return;
+      } catch (err) {
+        retries--;
+        console.error(`❌ 初始化失败，剩余重试次数 ${retries}:`, err);
+        if (retries === 0) throw new Error("初始化最终失败");
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    }
+  })();
+
+  return initPromise;
+}
+
+// ===================== JWT中间件 =====================
 async function authenticateToken(ctx: any, next: () => Promise<void>) {
   const authHeader = ctx.request.headers.get('authorization');
   const token = authHeader && authHeader.split(' ')[1];
@@ -136,10 +198,10 @@ async function authenticateToken(ctx: any, next: () => Promise<void>) {
   }
 }
 
-// 路由
+// ===================== 路由（全部保持不变） =====================
 const router = new Router();
 
-// 注册 ✅ 修复 Oak body 解析
+// 注册
 router.post('/api/register', async (ctx) => {
   const { username, password } = await ctx.request.json();
   if (!username || !password || username.length < 4 || username.length > 16 || password.length < 8) {
@@ -155,7 +217,7 @@ router.post('/api/register', async (ctx) => {
   }
 });
 
-// 登录 ✅ 修复 Oak body 解析
+// 登录
 router.post('/api/login', async (ctx) => {
   const { username, password } = await ctx.request.json();
   if (!username || !password) {
@@ -194,7 +256,7 @@ router.post('/api/login', async (ctx) => {
   }
 });
 
-// 同步数据 ✅ 修复 Oak body 解析
+// 同步数据 POST
 router.post('/api/sync', authenticateToken, async (ctx) => {
   const { items, mappings } = await ctx.request.json();
   const userId = ctx.state.user.userId;
@@ -232,6 +294,7 @@ router.post('/api/sync', authenticateToken, async (ctx) => {
   }
 });
 
+// 同步数据 GET
 router.get('/api/sync', authenticateToken, async (ctx) => {
   const userId = ctx.state.user.userId;
   try {
@@ -256,14 +319,14 @@ router.get('/api/sync', authenticateToken, async (ctx) => {
   }
 });
 
-// 激活会员 ✅ 修复 Oak body 解析
+// 激活会员
 router.post('/api/pay/activate', authenticateToken, async (ctx) => {
   const { activateCode, deviceFingerprint } = await ctx.request.json();
   const userId = ctx.state.user.userId;
   if (!client) return ctx.response.body = { success: false, message: '数据库未连接' };
   const conn = await client.getConnection();
   try {
-    const codeInfo = parseActivateCode(activateCode);
+    const codeInfo = await parseActivateCode(activateCode); // 异步解密
     if (!codeInfo.success) {
       ctx.response.body = { success: false, message: codeInfo.error };
       return;
@@ -299,7 +362,7 @@ router.post('/api/pay/activate', authenticateToken, async (ctx) => {
   }
 });
 
-// 设备解绑 ✅ 修复 Oak body 解析
+// 设备解绑
 router.post('/api/device/unbind', authenticateToken, async (ctx) => {
   const { newDeviceFingerprint } = await ctx.request.json();
   const userId = ctx.state.user.userId;
@@ -319,7 +382,7 @@ router.post('/api/device/unbind', authenticateToken, async (ctx) => {
   }
 });
 
-// 管理员接口
+// 管理员-解绑列表
 router.get('/api/admin/unbind/list', async (ctx) => {
   const adminPwd = ctx.request.headers.get('admin-password');
   if (!adminPwd || adminPwd !== ADMIN_PASSWORD) {
@@ -336,7 +399,7 @@ router.get('/api/admin/unbind/list', async (ctx) => {
   }
 });
 
-// 管理员处理 ✅ 修复 Oak body 解析
+// 管理员-处理解绑
 router.post('/api/admin/unbind/handle', async (ctx) => {
   const adminPwd = ctx.request.headers.get('admin-password');
   if (!adminPwd || adminPwd !== ADMIN_PASSWORD) {
@@ -382,7 +445,7 @@ router.get('/api/user/status', authenticateToken, async (ctx) => {
   }
 });
 
-// 修改用户名 ✅ 修复 Oak body 解析
+// 修改用户名
 router.post('/api/user/change-username', authenticateToken, async (ctx) => {
   const { newUsername } = await ctx.request.json();
   const userId = ctx.state.user.userId;
@@ -404,7 +467,7 @@ router.post('/api/user/change-username', authenticateToken, async (ctx) => {
   }
 });
 
-// 修改密码 ✅ 修复 Oak body 解析
+// 修改密码
 router.post('/api/user/change-password', authenticateToken, async (ctx) => {
   const { oldPassword, newPassword } = await ctx.request.json();
   const userId = ctx.state.user.userId;
@@ -431,7 +494,7 @@ router.post('/api/user/change-password', authenticateToken, async (ctx) => {
   }
 });
 
-// 设置密保 ✅ 修复 Oak body 解析
+// 设置密保
 router.post('/api/user/security-question', authenticateToken, async (ctx) => {
   const { question, answer } = await ctx.request.json();
   const userId = ctx.state.user.userId;
@@ -448,7 +511,7 @@ router.post('/api/user/security-question', authenticateToken, async (ctx) => {
   }
 });
 
-// 重置密码 ✅ 修复 Oak body 解析
+// 重置密码
 router.post('/api/user/reset-password', async (ctx) => {
   const { username, answer, newPassword } = await ctx.request.json();
   if (!username || !answer || !newPassword || newPassword.length < 8) {
@@ -510,7 +573,7 @@ router.get('/api/user/security-question/:username', async (ctx) => {
   }
 });
 
-// 打卡接口
+// 获取打卡数据
 router.get('/api/user/checkin', authenticateToken, async (ctx) => {
   const userId = ctx.state.user.userId;
   try {
@@ -542,7 +605,7 @@ router.get('/api/user/checkin', authenticateToken, async (ctx) => {
   }
 });
 
-// 上传打卡 ✅ 修复 Oak body 解析
+// 上传打卡数据
 router.post('/api/user/checkin', authenticateToken, async (ctx) => {
   const data = await ctx.request.json();
   const userId = ctx.state.user.userId;
@@ -568,25 +631,16 @@ router.post('/api/user/checkin', authenticateToken, async (ctx) => {
   }
 });
 
-// 全局初始化中间件（带超时保护）
-async function globalInit(ctx: any, next: () => Promise<void>) {
-  try {
-    await Promise.race([
-      initAll(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("初始化超时")), 8000))
-    ]);
-    await next();
-  } catch (err) {
-    console.error("❌ 服务异常:", err);
-    ctx.response.status = 503;
-    ctx.response.body = { success: false, message: "服务繁忙，请稍后重试" };
-  }
-}
+// ===================== 修复5：服务启动初始化（无超时中间件） =====================
+// 服务启动时直接初始化
+await initAll().catch(err => {
+  console.error("❌ 服务启动初始化失败:", err);
+  Deno.exit(1);
+});
 
 // 服务配置
 const app = new Application();
 app.use(oakCors({ origin: '*' }));
-app.use(globalInit);
 app.use(router.routes());
 app.use(router.allowedMethods());
 
